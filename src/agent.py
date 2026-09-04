@@ -1,21 +1,19 @@
 """
 On-demand LLM explainer for a single prediction (the Tab 2 "Explain" action).
 
-Primary path : Azure OpenAI through the UHG API gateway (client-credentials token).
+Primary path : Groq (open-source hosted models) via GROQ_API_KEY.
 Fallback path: a deterministic sentence built straight from the SHAP contributions,
                so the Explain button always returns something useful even if the
-               gateway is unreachable during the demo.
+               Groq API is unreachable during the demo.
 
 The agent only runs when the user clicks Explain on a specific row - never preloaded.
 """
 
 import os
-import time
 
-import httpx
 from dotenv import load_dotenv
 
-load_dotenv(override=True)  # read the .env file so the AZURE_* vars land in os.environ
+load_dotenv(override=True)  # read the .env file so GROQ_API_KEY lands in os.environ
 
 # SYSTEM_PROMPT = the fixed instructions given to the model on every call; it pins the
 # tone (concise, business-friendly) and forbids the model from inventing features/numbers
@@ -26,54 +24,18 @@ SYSTEM_PROMPT = (
     "and in which direction. Do not invent features or numbers."
 )
 
-# _token_cache = a tiny in-memory store for the gateway token so we don't re-auth on every
-# click. 'token' holds the bearer string, 'exp' is the epoch time it should be refreshed at.
-_token_cache = {"token": None, "exp": 0.0}
+# GROQ_MODEL = which hosted open-source model to call; overridable via env without a code change
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def is_configured():
-    """Return True only if the Azure gateway credentials exist in the environment.
+    """Return True only if a Groq API key exists in the environment.
 
-    We check two env vars that come from the .env file (loaded above):
-      - AZURE_CLIENT_ID       : the service-account id used for the token request
-      - AZURE_OPENAI_ENDPOINT : the gateway URL we'd send the chat request to
-    If either is missing we skip the LLM entirely and use the SHAP fallback, so the
-    app still works on a machine that has no credentials.
+    We check GROQ_API_KEY (from the .env file loaded above). If it's missing we skip
+    the LLM entirely and use the SHAP fallback, so the app still works on a machine
+    that has no credentials.
     """
-    return bool(os.environ.get("AZURE_CLIENT_ID") and os.environ.get("AZURE_OPENAI_ENDPOINT"))
-
-
-def _get_token():
-    """Fetch (or reuse) an OAuth access token for the gateway, caching it in memory.
-
-    The gateway authenticates with a short-lived bearer token, so we request one with
-    the client-credentials flow and cache it so every Explain click doesn't re-auth.
-    """
-    # if we still hold a token that hasn't hit its refresh time, reuse it as-is
-    if _token_cache["token"] and time.time() < _token_cache["exp"]:
-        return _token_cache["token"]
-
-    # body = the client-credentials form fields the token endpoint expects
-    body = {
-        "grant_type": "client_credentials",              # the OAuth flow (no user, just an app identity)
-        "scope": os.environ["AZURE_TOKEN_SCOPE"],         # which API the token is allowed to call
-        "client_id": os.environ["AZURE_CLIENT_ID"],       # the service-account id
-        "client_secret": os.environ["AZURE_CLIENT_SECRET"],  # the service-account password
-    }
-    # client = a short-lived HTTP client; POST the form and read the JSON reply
-    with httpx.Client(timeout=120) as client:
-        resp = client.post(
-            os.environ["AZURE_TOKEN_URL"],  # the token endpoint URL
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data=body,
-        )
-        resp.raise_for_status()  # turn any 4xx/5xx into an exception the caller can catch
-        data = resp.json()       # data = parsed response, holds access_token + expires_in
-
-    _token_cache["token"] = data["access_token"]  # the bearer token string we'll send as auth
-    # store when it expires, minus a 120s safety margin so we refresh slightly early
-    _token_cache["exp"] = time.time() + int(data.get("expires_in", 3000)) - 120
-    return _token_cache["token"]
+    return bool(os.environ.get("GROQ_API_KEY"))
 
 
 def _format_features(explanation):
@@ -147,23 +109,17 @@ def explain_prediction(explanation):
     if not is_configured():  # no credentials -> skip straight to the deterministic summary
         return fallback_explanation(explanation)
     try:
-        from langchain_openai import AzureChatOpenAI
+        from langchain_groq import ChatGroq
 
-        # client = the chat model handle, pointed at the gateway and authed with our token
-        client = AzureChatOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],      # gateway base URL
-            api_version=os.environ["AZURE_OPENAI_API_VERSION"],      # Azure OpenAI REST version
-            azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT"],  # the specific model deployment name
-            temperature=0,                                          # deterministic output for a factual task
-            azure_ad_token=_get_token(),                            # bearer token from the flow above
-            default_headers={
-                "projectId": os.environ.get("AZURE_PROJECT_ID", ""),  # gateway routing/billing header
-                "model-usage-type": "prod",                            # gateway usage tag it requires
-            },
+        # llm = the chat model handle, pointed at Groq's hosted open-source model
+        llm = ChatGroq(
+            groq_api_key=os.getenv("GROQ_API_KEY"),
+            model=GROQ_MODEL,
+            temperature=0,  # deterministic output for a factual task
         )
         # resp = the model's reply; we send a system message (rules) + the user prompt
         system_prompt, user_prompt = build_messages(explanation)  # single source of truth
-        resp = client.invoke(
+        resp = llm.invoke(
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

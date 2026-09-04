@@ -15,7 +15,7 @@ src/train.py           # clean -> stratified split -> tune -> save model + prepr
 src/evaluate.py        # load artifacts -> score hold-out -> per-row results + SHAP
 src/explain.py         # SHAP helpers (TreeExplainer, explain_row, importances)
 src/plots.py           # RF / SHAP importance + SHAP summary/scatter (train & test)
-src/agent.py           # on-demand LLM explainer (Azure gateway) + SHAP fallback
+src/agent.py           # on-demand LLM explainer (Groq open-source model) + SHAP fallback
 app/streamlit_app.py   # the two-tab dashboard
 eda.ipynb              # exploration notebook
 models/                # saved model, preprocessor, metrics, plots (committed)
@@ -51,22 +51,18 @@ py -3.12 -m venv .venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+> If `requirements.txt` doesn't yet include it, also run `pip install langchain-groq` for the LLM agent.
 
 ### 5. (Optional) Configure the LLM agent
 The `.env` file is **not** committed (it holds a secret). Create it in the project root only if you
 want the live LLM explanations; otherwise the "Explain" button falls back to a deterministic
-SHAP-based summary.
+SHAP-based summary. The agent uses [Groq](https://console.groq.com/) to run an open-source model
+(`openai/gpt-oss-120b` by default) — get a free API key from the Groq console.
 ```
-AZURE_TOKEN_URL=https://api.uhg.com/oauth2/token
-AZURE_TOKEN_SCOPE=https://api.uhg.com/.default
-AZURE_CLIENT_ID=<your id>
-AZURE_CLIENT_SECRET=<your secret>
-AZURE_OPENAI_ENDPOINT=https://api.uhg.com/api/cloud/api-management/ai-gateway-reasoning/1.0
-AZURE_OPENAI_API_VERSION=2025-01-01-preview
-AZURE_OPENAI_DEPLOYMENT=gpt-5.2_2025-12-11
-AZURE_OPENAI_MODEL=gpt-5.2
-AZURE_PROJECT_ID=<your project id>
+GROQ_API_KEY=<your groq api key>
+GROQ_MODEL=openai/gpt-oss-120b
 ```
+`GROQ_MODEL` is optional; omit it to use the default above.
 
 ### 6. Run the app
 The trained `models/` and the CSVs are already in the repo, so you can launch immediately:
@@ -87,4 +83,3 @@ python src/plots.py      # -> models/plots/*.png
   (scikit-learn 1.9.0). Install from that file for guaranteed compatibility; if a load error ever
   occurs, just re-run the step 7 scripts to regenerate them locally.
 - `holdout.csv` contains Columns A–G only (no label) — it's the file to upload in Tab 2.
-
