@@ -1,0 +1,20 @@
+{
+  "classes": [
+    "Category_1",
+    "Category_2",
+    "Other"
+  ],
+  "best_params": {
+    "model__max_depth": 20,
+    "model__min_samples_leaf": 1,
+    "model__n_estimators": 400
+  },
+  "cv_means": {
+    "accuracy": 0.9470710394734742,
+    "balanced_accuracy": 0.7958229585458755,
+    "f1_macro": 0.8089525421430803,
+    "roc_auc_ovr": 0.9787453567904135
+  },
+  "n_train": 5309,
+  "n_holdout": 590
+}
