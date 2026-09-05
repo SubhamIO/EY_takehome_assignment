@@ -12,3 +12,4 @@ openai
 python-dotenv
 langchain-openai
 httpx
+langchain_groq
