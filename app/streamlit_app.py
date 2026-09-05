@@ -20,17 +20,25 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import shap
 import streamlit as st
 from sklearn.metrics import classification_report
 
 import src.preprocessing  # noqa: F401  (registers module path for the pickled transformer)
 from src import agent
 from src.explain import build_tree_explainer, explain_row
-from src.preprocessing import RAW_FEATURES, clean_label
+from src.preprocessing import (
+    DATE_COLS,
+    NUMERIC_COLS,
+    RAW_FEATURES,
+    clean_label,
+    group_rare_labels,
+)
 
 MODELS_DIR = ROOT / "models"
 PLOTS_DIR = MODELS_DIR / "plots"
 DATA_PATH = ROOT / "Challenge_Data.xlsx"
+HOLDOUT_PATH = ROOT / "holdout.csv"
 
 st.set_page_config(page_title="EY Data Science Challenge", layout="wide")
 
@@ -63,7 +71,22 @@ def load_csv(path, **kw):
 def load_raw():
     df = pd.read_excel(DATA_PATH)
     df["label_clean"] = df["ClassificationLabel"].apply(clean_label)
+    df["label_grouped"] = group_rare_labels(df["label_clean"])  # 3-class view used for comparisons
     return df
+
+
+@st.cache_data
+def compute_holdout_shap():
+    """Compute SHAP once on the hold-out; the class selector just re-slices this."""
+    model, preprocessor, explainer = load_model()
+    X = pd.read_csv(HOLDOUT_PATH)
+    feat_names = [n.split("__", 1)[-1] for n in preprocessor.named_steps["features"].get_feature_names_out()]
+    shap_vals = explainer(np.asarray(preprocessor.transform(X))).values  # (rows, features[, classes])
+    numeric_features = [f for f in (NUMERIC_COLS + DATE_COLS) if f in feat_names]
+    num_idx = [feat_names.index(f) for f in numeric_features]
+    # unscaled values so the axes read in real units (Col3 amount, months 1-12)
+    X_display = src.preprocessing._prepare_frame(X)[numeric_features].reset_index(drop=True)
+    return shap_vals, numeric_features, num_idx, X_display, list(model.classes_)
 
 
 def artifacts_ready():
@@ -83,6 +106,35 @@ def render_exploration(raw):
 
     st.subheader("Raw sample")
     st.dataframe(raw[RAW_FEATURES + ["ClassificationLabel"]].head(8), use_container_width=True)
+
+    st.subheader("Explore any column")
+    col = st.selectbox("Pick a feature column to drill into", RAW_FEATURES, key="explore_col")
+    s = raw[col]
+    e1, e2, e3 = st.columns(3)
+    e1.metric("Unique values", f"{s.nunique():,}")
+    e2.metric("Missing", f"{int(s.isna().sum()):,}")
+    e3.metric("Dtype", str(s.dtype))
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.markdown("**Top values**")
+        vc = s.value_counts(dropna=False).head(15).rename_axis(col).reset_index(name="count")
+        st.dataframe(vc, use_container_width=True, hide_index=True)
+    with ec2:
+        st.markdown("**Distribution**")
+        if pd.api.types.is_numeric_dtype(s):
+            lo_e, hi_e = s.quantile([0.01, 0.99])
+            clip = s[(s >= lo_e) & (s <= hi_e)].dropna()
+            fige, axe = plt.subplots(figsize=(5, 3.5))
+            axe.hist(clip, bins=40, color="steelblue", edgecolor="white")
+            axe.set_title(f"{col} (clipped 1-99 pct)")
+            axe.set_xlabel(f"{col} value")
+            axe.set_ylabel("count")
+            fige.tight_layout()
+            st.pyplot(fige)
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            st.bar_chart(s.dt.to_period("M").astype(str).value_counts().sort_index())
+        else:
+            st.bar_chart(s.value_counts().head(15))
 
     left, right = st.columns(2)
     with left:
@@ -118,10 +170,33 @@ def render_exploration(raw):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 3.5))
     ax1.hist(clipped, bins=50, color="steelblue", edgecolor="white")
     ax1.set_title("Col3 (clipped 1-99 pct)")
+    ax1.set_xlabel("Col3 value")
+    ax1.set_ylabel("count")
     ax2.boxplot(raw["Col3"].dropna())
     ax2.set_title("Col3 with outliers")
+    ax2.set_ylabel("Col3 value")
+    ax2.set_xticklabels(["Col3"])
     fig.tight_layout()
     st.pyplot(fig)
+
+    st.subheader("Col3 by class - does it separate the classes?")
+    classes_all = sorted(raw["label_grouped"].unique())
+    picked = st.multiselect("Classes to overlay", classes_all, default=classes_all, key="col3_classes")
+    if picked:
+        lo_c, hi_c = raw["Col3"].quantile([0.01, 0.99])
+        figb, axb = plt.subplots(figsize=(9, 3.8))
+        for c in picked:
+            vals = raw.loc[(raw["label_grouped"] == c) & raw["Col3"].between(lo_c, hi_c), "Col3"].dropna()
+            if len(vals):
+                axb.hist(vals, bins=40, alpha=0.5, density=True, label=f"{c} (n={len(vals)})")
+        axb.set_xlabel("Col3 (clipped 1-99 pct)")
+        axb.set_ylabel("density")
+        axb.legend()
+        figb.tight_layout()
+        st.pyplot(figb)
+        st.caption("Density-normalised so classes of very different sizes are comparable; separation here means Col3 is informative.")
+    else:
+        st.info("Pick at least one class to compare.")
 
     st.subheader("Records over time (Col5)")
     by_month = raw.groupby(pd.to_datetime(raw["Col5"]).dt.to_period("M").astype(str)).size()
@@ -257,9 +332,50 @@ def render_model():
     _img(g1, "rf_feature_importance.png", "RandomForest importance")
     _img(g2, "shap_global_importance.png", "SHAP global importance")
     st.caption("Two independent methods agree: Col6 and Col1 are the dominant drivers.")
-    s1, s2 = st.columns(2)
-    _img(s1, "shap_summary_numeric_Category_2_test.png", "SHAP summary - numeric (test)")
-    _img(s2, "shap_scatter_numeric_Category_2_test.png", "SHAP vs value - numeric (test)")
+
+    st.markdown("**SHAP for the numeric features - pick which class to explain:**")
+    if HOLDOUT_PATH.exists():
+        shap_vals, numeric_features, num_idx, X_display, classes = compute_holdout_shap()
+        target = st.selectbox(
+            "SHAP target class", classes,
+            index=classes.index("Category_2") if "Category_2" in classes else 0,
+            key="shap_class",
+        )
+        ci = classes.index(target)
+        shap_cls = shap_vals[:, :, ci] if shap_vals.ndim == 3 else shap_vals
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            plt.figure()
+            shap.summary_plot(shap_cls[:, num_idx], X_display, show=False)
+            fig_bee = plt.gcf()
+            fig_bee.suptitle(f"SHAP summary - {target}", y=1.02)
+            st.pyplot(fig_bee)
+            plt.close(fig_bee)
+        with sc2:
+            n = len(num_idx)
+            nrows = int(np.ceil(n / 2))
+            fig_sc, axes = plt.subplots(nrows, 2, figsize=(8, 3.2 * nrows))
+            axes = np.atleast_1d(axes).ravel()
+            for ax, i, name in zip(axes, num_idx, numeric_features):
+                xv = X_display[name].values
+                ax.scatter(xv, shap_cls[:, i], s=10, alpha=0.5, color="steelblue")
+                ax.axhline(0, color="grey", lw=0.8)
+                ax.set_title(name)
+                ax.set_xlabel("value")
+                ax.set_ylabel("SHAP")
+                lo_s, hi_s = np.nanpercentile(xv, [1, 99])
+                if hi_s > lo_s:
+                    ax.set_xlim(lo_s, hi_s)
+            for ax in axes[n:]:
+                ax.set_visible(False)
+            fig_sc.suptitle(f"SHAP vs value - {target}")
+            fig_sc.tight_layout()
+            st.pyplot(fig_sc)
+            plt.close(fig_sc)
+        st.caption("Numeric features only - the beeswarm colour (feature value) is meaningful for these, "
+                   "but not for the ordinal-encoded text columns.")
+    else:
+        st.info("holdout.csv not found - run `python src/train.py` first.")
 
 
 def _img(col, name, caption):
@@ -347,9 +463,13 @@ def render_prediction():
         st.session_state.setdefault("show_prompt", {})[idx] = True
 
     # the agent's answer (if already requested for this row)
-    text = st.session_state.get("explanations", {}).get(idx)
-    if text:
-        st.markdown(text)
+    result = st.session_state.get("explanations", {}).get(idx)
+    if result:
+        if result["is_llm"]:
+            st.success(f"Source: {result['source']}")
+        else:
+            st.warning(f"Source: {result['source']}")
+        st.markdown(result["text"])
         st.markdown("**Top feature contributions (SHAP for the predicted class):**")
         st.dataframe(pd.DataFrame(row_explanation(idx)["top_features"]),
                      use_container_width=True, hide_index=True)
