@@ -63,6 +63,15 @@ Best params: `n_estimators=400, max_depth=20, min_samples_leaf=1`.
    confusion matrix, classification report, and RF + SHAP importance/summary/scatter plots.
 4. **Split strategy**: stratified 90/10, CV as validation, hold-out untouched.
 
+**Interactive controls to show off in Tab 1** (earns the brief's "interactive viz" bonus):
+- **Explore any column** — a dropdown over Col1–Col7 that live-shows cardinality, missingness,
+  top values, and a distribution chart. Invite the panel to pick a column.
+- **Col3 by class** — a class multiselect that overlays density-normalised Col3 distributions,
+  answering "does this feature separate the classes?" on demand.
+- **SHAP target-class selector** — switch the SHAP beeswarm/scatter between Category_1 / Category_2 /
+  Other. SHAP is computed **once and cached** for the whole hold-out (all classes), then just
+  **re-sliced** per class — so switching is instant and you can show how the drivers change per class.
+
 ### Step 2 — Run the pipeline live (Tab 2)
 - Upload `holdout.csv` (Cols A–G). Say: "Same pipeline object that was fit on train — nothing
   pre-computed." Show the 590 predictions + confidence in the scrollable table and the class-mix chart.
@@ -96,6 +105,8 @@ Best params: `n_estimators=400, max_depth=20, min_samples_leaf=1`.
 
 ### Dashboard & UX
 - Two clear tabs, interactive tables/charts, scrollable predictions.
+- **Interactive Tab 1 controls**: an any-column explorer, a per-class Col3 comparison, and a
+  live SHAP class selector — so the panel can interrogate the data/model on demand, not just watch.
 - **Seamless live pipeline** (single saved object) and a **functional, transparent AI agent**
   (with a prompt-inspector and a SHAP fallback so it never dead-ends).
 
@@ -167,6 +178,12 @@ test plots show the same feature effects — both are evidence it generalizes.
 **What are RF importance vs SHAP telling you?** They independently agree on the ranking
 (Col6 > Col1 > Col3 > Col4 > Col5 > Col7), which builds trust. RF importance is impurity-based and
 cardinality-biased; SHAP is prediction-level and signed.
+
+**Are the Tab 1 SHAP plots pre-computed or generated live?** Generated live, but SHAP itself runs
+**once per session and is cached** — it produces a `(rows, features, classes)` array for the whole
+hold-out; the class selector just **re-slices** that array and redraws the figures. So no static
+per-class images: the class switch is an instant re-slice, always in sync with the loaded model.
+The only static PNGs are the two *global* importance charts.
 
 **Why RandomForest over deep learning / boosting?** 5,899 rows with mixed messy features — RF is
 strong out-of-the-box, robust to scale/outliers, interpretable, and fast to tune. A neural net is
