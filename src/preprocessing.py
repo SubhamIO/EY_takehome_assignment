@@ -45,6 +45,16 @@ DEFAULT_PARAM_GRID = {
     "model__min_samples_leaf": [1, 3],
 }
 
+'''
+Tried max_depth = 4, 6, 12, 20, None and 20 gave the best macro-F1 on the 5-fold CV. The results are below:
+max_depth  |  macro-F1  |  Balaned Accuracy  |  Accuracy
+-----------+------------+-------------------+----------------
+4         |  0.486      |  0.793             |  0.720
+6         |  0.633      |  0.821             |  0.864
+12        |  0.791      |  0.808             |  0.929
+20        |  0.809      |  0.796             |  0.947
+None      |  0.805      |  0.787             |  0.947
+'''
 
 def clean_label(value):
     """Collapse every messy spelling of a label onto a single canonical Category_N.
