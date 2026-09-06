@@ -41,7 +41,7 @@ KEEP_CLASSES = {"Category_1", "Category_2"}
 # trades tree depth vs. how aggressively we regularise with leaf size / tree count.
 DEFAULT_PARAM_GRID = {
     "model__n_estimators": [200, 400],
-    "model__max_depth": [None, 20],
+    "model__max_depth": [4, 6, 12, 20, None],
     "model__min_samples_leaf": [1, 3],
 }
 

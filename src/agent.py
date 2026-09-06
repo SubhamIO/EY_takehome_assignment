@@ -119,6 +119,27 @@ def build_messages(explanation):
     return SYSTEM_PROMPT, _build_prompt(explanation)
 
 
+def _get_chat_client(temperature=0):
+    """Build an AzureChatOpenAI handle pointed at the gateway and authed with our token.
+
+    Shared by the row explainer and the dataframe Q&A agent so the auth/header setup
+    lives in one place. temperature defaults to 0 (deterministic, factual).
+    """
+    from langchain_openai import AzureChatOpenAI
+
+    return AzureChatOpenAI(
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],      # gateway base URL
+        api_version=os.environ["AZURE_OPENAI_API_VERSION"],      # Azure OpenAI REST version
+        azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT"],  # the specific model deployment name
+        temperature=temperature,
+        azure_ad_token=_get_token(),                            # bearer token from the flow above
+        default_headers={
+            "projectId": os.environ.get("AZURE_PROJECT_ID", ""),  # gateway routing/billing header
+            "model-usage-type": "prod",                            # gateway usage tag it requires
+        },
+    )
+
+
 def fallback_explanation(explanation):
     """Build an explanation straight from SHAP, used when the LLM can't be reached.
 
@@ -147,20 +168,8 @@ def explain_prediction(explanation):
     if not is_configured():  # no credentials -> skip straight to the deterministic summary
         return fallback_explanation(explanation)
     try:
-        from langchain_openai import AzureChatOpenAI
-
         # client = the chat model handle, pointed at the gateway and authed with our token
-        client = AzureChatOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],      # gateway base URL
-            api_version=os.environ["AZURE_OPENAI_API_VERSION"],      # Azure OpenAI REST version
-            azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT"],  # the specific model deployment name
-            temperature=0,                                          # deterministic output for a factual task
-            azure_ad_token=_get_token(),                            # bearer token from the flow above
-            default_headers={
-                "projectId": os.environ.get("AZURE_PROJECT_ID", ""),  # gateway routing/billing header
-                "model-usage-type": "prod",                            # gateway usage tag it requires
-            },
-        )
+        client = _get_chat_client()
         # resp = the model's reply; we send a system message (rules) + the user prompt
         system_prompt, user_prompt = build_messages(explanation)  # single source of truth
         resp = client.invoke(
@@ -173,3 +182,40 @@ def explain_prediction(explanation):
     except Exception as e:  # network/auth/gateway issues must not break the demo
         # e = whatever went wrong; show the SHAP fallback and note the error type
         return f"{fallback_explanation(explanation)}\n\n_(LLM unavailable: {type(e).__name__})_"
+
+
+def answer_data_question(df, question):
+    """Answer a natural-language question about a dataframe (the Tab 1 'chat with data').
+
+    Uses a LangChain pandas DataFrame agent: the LLM is given the frame's schema, writes
+    pandas code, executes it LOCALLY on `df`, and returns the result in plain English.
+
+    Security note: the agent runs LLM-generated Python, so LangChain requires an explicit
+    allow_dangerous_code flag. We only point it at the trusted local challenge data, never
+    at an arbitrary user upload, which keeps the prompt-injection surface small.
+
+    df       : the dataframe to answer questions about.
+    question : the user's natural-language question.
+    """
+    if not is_configured():
+        return "LLM not configured - set the AZURE_* variables in .env to enable data Q&A."
+    try:
+        from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+
+        agent = create_pandas_dataframe_agent(
+            _get_chat_client(),
+            df,
+            agent_type="tool-calling",  # native function-calling (the reasoning model rejects ReAct's 'stop')
+            allow_dangerous_code=True,  # required: the agent executes generated pandas code
+            prefix=(
+                "You are analysing a pandas dataframe named df. For every question, USE THE PYTHON "
+                "TOOL to compute the answer on df, then reply in concise plain English that INCLUDES "
+                "the computed numbers. Never return raw code as your final answer."
+            ),
+            verbose=False,
+            max_iterations=8,
+        )
+        result = agent.invoke({"input": question})
+        return result["output"] if isinstance(result, dict) else str(result)
+    except Exception as e:
+        return f"Couldn't answer that ({type(e).__name__}). Try rephrasing, e.g. 'how many rows are Category_2?'"

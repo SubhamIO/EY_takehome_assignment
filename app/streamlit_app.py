@@ -136,6 +136,15 @@ def render_exploration(raw):
         else:
             st.bar_chart(s.value_counts().head(15))
 
+    st.subheader("Ask the data (AI agent)")
+    st.caption("Natural-language Q&A over the dataset — the agent writes and runs pandas to answer. "
+               "e.g. 'how many rows are Category_2?', 'average Col3 for Doc1 vs NoDoc?'")
+    q = st.text_input("Your question", key="data_q", placeholder="how many rows are Category_2?")
+    if st.button("Ask", key="data_q_btn") and q.strip():
+        df_for_agent = raw[RAW_FEATURES + ["label_clean"]].rename(columns={"label_clean": "label"})
+        with st.spinner("The agent is analysing the data..."):
+            st.markdown(agent.answer_data_question(df_for_agent, q))
+
     left, right = st.columns(2)
     with left:
         st.subheader("Missing values")

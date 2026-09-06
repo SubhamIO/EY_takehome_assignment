@@ -11,4 +11,6 @@ shap
 openai
 python-dotenv
 langchain-openai
+langchain-experimental
+tabulate
 httpx
